@@ -65,6 +65,22 @@ class DownloaderApp(tk.Tk):
                 "yt-dlp is not installed.\n\nInstall it with:\n    pip install yt-dlp"
             )
 
+        self.after(300, self._check_ffmpeg)
+
+    def _check_ffmpeg(self):
+        """Warn upfront if ffmpeg is missing, instead of failing silently later."""
+        from shutil import which
+        exe_dir = os.path.dirname(os.path.abspath(sys.argv[0]))
+        local_ffmpeg = os.path.join(exe_dir, "ffmpeg.exe")
+        if which("ffmpeg") is None and not os.path.isfile(local_ffmpeg):
+            messagebox.showwarning(
+                APP_TITLE,
+                "ffmpeg was not found.\n\n"
+                "Downloads will likely fail or produce no output without it.\n\n"
+                "Fix: download a static ffmpeg build (e.g. from gyan.dev), "
+                "and place ffmpeg.exe in the same folder as this app."
+            )
+
     # ---------- UI construction ----------
 
     def _build_style(self):
@@ -239,6 +255,9 @@ class DownloaderApp(tk.Tk):
         fmt = QUALITY_OPTIONS[self.quality_label.get()]
         is_audio_only = "Audio only" in self.quality_label.get()
 
+        succeeded = 0
+        failures = []  # list of (title, error_message)
+
         for i, item in enumerate(selected, start=1):
             if self.cancel_flag.is_set():
                 self.log_queue.put(("status", "Cancelled."))
@@ -260,7 +279,8 @@ class DownloaderApp(tk.Tk):
                 "progress_hooks": [hook],
                 "quiet": True,
                 "noprogress": True,
-                "ignoreerrors": True,
+                # NOTE: ignoreerrors intentionally left False (default) so failures
+                # actually surface instead of being silently swallowed.
             }
             if is_audio_only:
                 ydl_opts["postprocessors"] = [{
@@ -273,13 +293,18 @@ class DownloaderApp(tk.Tk):
 
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([video_url])
+                    ret = ydl.download([video_url])
+                if ret == 0:
+                    succeeded += 1
+                else:
+                    failures.append((item["title"], "yt-dlp reported a non-zero exit status"))
             except Exception as e:
+                failures.append((item["title"], str(e)))
                 self.log_queue.put(("status", f"Error on '{item['title']}': {e}"))
 
             self.log_queue.put(("progress", i / total * 100))
 
-        self.log_queue.put(("done", None))
+        self.log_queue.put(("done", {"succeeded": succeeded, "failures": failures}))
 
     def _cancel_download(self):
         self.cancel_flag.set()
@@ -301,10 +326,27 @@ class DownloaderApp(tk.Tk):
                     self.status_text.set(payload)
                     messagebox.showerror(APP_TITLE, payload)
                 elif kind == "done":
-                    self.status_text.set("Download complete.")
                     self.overall_progress.set(100)
                     self.download_btn.config(state="normal")
                     self.cancel_btn.config(state="disabled")
+                    succeeded = payload.get("succeeded", 0) if payload else 0
+                    failures = payload.get("failures", []) if payload else []
+                    if failures:
+                        self.status_text.set(
+                            f"Finished: {succeeded} succeeded, {len(failures)} failed."
+                        )
+                        detail = "\n\n".join(f"- {t}: {err}" for t, err in failures[:10])
+                        if len(failures) > 10:
+                            detail += f"\n\n...and {len(failures) - 10} more."
+                        messagebox.showwarning(
+                            APP_TITLE,
+                            f"{succeeded} video(s) downloaded successfully.\n"
+                            f"{len(failures)} failed:\n\n{detail}\n\n"
+                            "If every video failed, ffmpeg is likely missing — "
+                            "place ffmpeg.exe next to this app."
+                        )
+                    else:
+                        self.status_text.set(f"Download complete. {succeeded} video(s) saved.")
         except queue.Empty:
             pass
         self.after(150, self._poll_log_queue)
