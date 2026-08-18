@@ -279,6 +279,14 @@ class DownloaderApp(tk.Tk):
                 "progress_hooks": [hook],
                 "quiet": True,
                 "noprogress": True,
+                # Workaround for YouTube 403 Forbidden errors: forcing the
+                # android/ios player clients avoids the web client's signature
+                # checks that most often trigger 403s.
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": ["android", "ios", "web"],
+                    }
+                },
                 # NOTE: ignoreerrors intentionally left False (default) so failures
                 # actually surface instead of being silently swallowed.
             }
